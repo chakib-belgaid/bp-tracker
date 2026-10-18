@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR test bench</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  .case { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; }
+  canvas { max-width: 220px; border: 1px solid #ddd; }
+  .pass { color: #0a7a0a; font-weight: 700; } .fail { color: #c22; font-weight: 700; }
+</style>
+<h1>OCR test bench</h1>
+<p>Fixtures are named <code>SYS-DIA-PULSE-anything.jpg</code>. Drop extra photos here to see how they parse:
+  <input type="file" id="extra" accept="image/*" multiple></p>
+<p id="summary"></p>
+<div id="out"></div>
+<script src="../ocr.js"></script>
+<script>
+  const FIXTURES = ['126-81-81-a.jpg', '126-81-81-b.jpg'];
+  let pass = 0, total = 0;
+  async function runOne(src, name) {
+    const img = new Image(); img.src = src; await img.decode();
+    const s = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth * s; c.height = img.naturalHeight * s;
+    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, c.width, c.height);
+    const t = performance.now();
+    const r = BpOcr.recognize(ctx.getImageData(0, 0, c.width, c.height));
+    const ms = Math.round(performance.now() - t);
+    const m = name.match(/^(\d+)-(\d+)-(\d+)/);
+    const ok = m ? r.sys === +m[1] && r.dia === +m[2] && r.pulse === +m[3] : null;
+    if (m) { total++; if (ok) pass++; }
+    // binarized display as the OCR sees it
+    const mc = document.createElement('canvas');
+    if (r.debug) {
+      const { mask, w, h } = r.debug; mc.width = w; mc.height = h;
+      const id = mc.getContext('2d').createImageData(w, h);
+      for (let p = 0; p < w * h; p++) { const v = mask[p] ? 0 : 255; id.data.set([v, v, v, 255], p * 4); }
+      mc.getContext('2d').putImageData(id, 0, 0);
+    }
+    const row = document.createElement('div'); row.className = 'case';
+    const info = document.createElement('div');
+    info.innerHTML = `<div><b></b></div><div>read: ${r.sys}/${r.dia} pulse ${r.pulse} (${ms} ms, tilt ${r.debug ? r.debug.angle : '?'}°)</div>`;
+    info.querySelector('b').textContent = name;
+    if (ok !== null) info.insertAdjacentHTML('beforeend', ok ? '<div class="pass">PASS</div>' : '<div class="fail">FAIL</div>');
+    row.append(mc, info); document.getElementById('out').append(row);
+    document.getElementById('summary').textContent = total ? `${pass}/${total} fixtures pass` : '';
+    window.__results = { pass, total };
+  }
+  (async () => { for (const f of FIXTURES) await runOne('fixtures/' + f, f); })();
+  document.getElementById('extra').addEventListener('change', async (e) => {
+    for (const f of e.target.files) await runOne(URL.createObjectURL(f), f.name);
+  });
+</script>

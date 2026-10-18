@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2a78d6">
+  <title>BP Log</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>BP Log</h1>
+    <span id="offline-badge" class="badge" hidden>offline</span>
+  </header>
+
+  <main>
+    <!-- TODAY -->
+    <section id="tab-today" class="tab active">
+      <div class="scan-actions">
+        <label class="btn primary big">
+          <input id="scan-input" type="file" accept="image/*" capture="environment" hidden>
+          Scan monitor photo
+        </label>
+        <div class="row gap">
+          <label class="btn">
+            <input id="pick-input" type="file" accept="image/*" hidden>
+            From gallery
+          </label>
+          <button class="btn" id="manual-btn">Enter manually</button>
+        </div>
+      </div>
+
+      <div id="latest" class="card"></div>
+      <div id="averages" class="stats"></div>
+
+      <div class="card">
+        <h2>Today's medication</h2>
+        <ul id="today-meds" class="checklist"></ul>
+        <p id="no-meds" class="muted" hidden>No medications yet. Add them in the <a href="#meds">Meds</a> tab.</p>
+      </div>
+    </section>
+
+    <!-- HISTORY -->
+    <section id="tab-history" class="tab">
+      <div class="filters" role="group" aria-label="Date range">
+        <button class="chip" data-range="7">7 days</button>
+        <button class="chip active" data-range="30">30 days</button>
+        <button class="chip" data-range="90">90 days</button>
+        <button class="chip" data-range="0">All</button>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-head">
+          <h2>Blood pressure (mmHg)</h2>
+          <div class="legend">
+            <span><i class="key sys"></i>Systolic</span>
+            <span><i class="key dia"></i>Diastolic</span>
+          </div>
+        </div>
+        <div id="chart" class="chart"></div>
+        <div id="tooltip" class="tooltip" hidden></div>
+      </div>
+      <div id="range-stats" class="stats"></div>
+      <div class="card">
+        <h2>Readings</h2>
+        <ul id="history-list" class="list"></ul>
+      </div>
+    </section>
+
+    <!-- MEDS -->
+    <section id="tab-meds" class="tab">
+      <div class="card">
+        <h2>My medications</h2>
+        <ul id="med-list" class="list"></ul>
+        <form id="med-form" class="form">
+          <input name="name" placeholder="Name (e.g. Amlodipine)" required autocomplete="off">
+          <input name="dose" placeholder="Dose (e.g. 5 mg)" autocomplete="off">
+          <input name="times" placeholder="Times, e.g. 08:00, 20:00" autocomplete="off">
+          <button class="btn primary" type="submit">Add medication</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Dose log</h2>
+        <ul id="dose-list" class="list"></ul>
+      </div>
+    </section>
+
+    <!-- DATA -->
+    <section id="tab-data" class="tab">
+      <div class="card">
+        <h2>Export</h2>
+        <p class="muted">Everything stays on this phone. Export regularly as a backup.</p>
+        <div class="stack">
+          <button class="btn" id="export-readings">Readings → CSV</button>
+          <button class="btn" id="export-doses">Medication log → CSV</button>
+          <button class="btn" id="export-json">Full backup → JSON</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Import</h2>
+        <p class="muted">Restore a JSON backup or import a readings CSV (same columns as the export). Duplicates are skipped.</p>
+        <label class="btn">
+          <input id="import-input" type="file" accept=".json,.csv,application/json,text/csv" hidden>
+          Choose file…
+        </label>
+      </div>
+      <div class="card">
+        <h2>Storage</h2>
+        <p id="storage-info" class="muted"></p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom">
+    <a href="#today" data-tab="today" class="active">Today</a>
+    <a href="#history" data-tab="history">History</a>
+    <a href="#meds" data-tab="meds">Meds</a>
+    <a href="#data" data-tab="data">Data</a>
+  </nav>
+
+  <!-- Reading editor (scan result / manual entry) -->
+  <dialog id="editor">
+    <form method="dialog" id="reading-form">
+      <h2 id="editor-title">New reading</h2>
+      <div id="scan-preview" class="scan-preview" hidden>
+        <canvas id="preview-canvas"></canvas>
+        <p id="scan-status" class="scan-status"></p>
+      </div>
+      <div id="series" class="series" hidden>
+        <ol id="series-list" class="series-list"></ol>
+        <p id="series-current" class="series-label"></p>
+      </div>
+      <div class="fields">
+        <label>SYS<input name="sys" type="number" inputmode="numeric" min="50" max="300" required></label>
+        <label>DIA<input name="dia" type="number" inputmode="numeric" min="30" max="200" required></label>
+        <label>Pulse<input name="pulse" type="number" inputmode="numeric" min="30" max="250"></label>
+      </div>
+      <p id="series-avg" class="series-avg" hidden></p>
+      <div id="series-add" class="series-add">
+        <span class="muted">Add a measurement to average:</span>
+        <div class="row gap">
+          <label class="btn small" id="next-scan-btn">
+            <input id="next-scan" type="file" accept="image/*" capture="environment" hidden>
+            Photo
+          </label>
+          <label class="btn small" id="next-pick-btn">
+            <input id="next-pick" type="file" accept="image/*" hidden>
+            Gallery
+          </label>
+          <button class="btn small" type="button" id="next-manual">Type</button>
+        </div>
+      </div>
+      <label class="wide">Date &amp; time<input name="ts" type="datetime-local" required></label>
+      <label class="wide">Note<input name="note" placeholder="optional (left arm, after coffee…)" autocomplete="off"></label>
+      <div class="row gap end">
+        <button class="btn danger" value="delete" id="delete-reading" formnovalidate hidden>Delete</button>
+        <span style="flex:1"></span>
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" value="save" id="save-reading">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="ocr.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
