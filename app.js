@@ -92,11 +92,12 @@
   // ---------- tabs ----------
   function showTab() {
     const name = (location.hash || '#today').slice(1);
-    const known = ['today', 'history', 'meds', 'data'].includes(name) ? name : 'today';
+    const known = ['today', 'history', 'meds', 'data', 'about'].includes(name) ? name : 'today';
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === `tab-${known}`));
     document.querySelectorAll('nav.bottom a').forEach((a) => a.classList.toggle('active', a.dataset.tab === known));
     if (known === 'history') renderChart();
     if (known === 'data') renderStorage();
+    if (known === 'about') renderAbout();
   }
   window.addEventListener('hashchange', showTab);
 
@@ -646,6 +647,71 @@
     }
     info.textContent = txt;
   }
+
+  // ---------- about + updates ----------
+  const VERSION = window.BP_LOG_VERSION || { version: '?', date: '' };
+  // a.b.c comparison: >0 when a is newer
+  const cmpVersion = (a, b) => {
+    const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    return 0;
+  };
+  function renderAbout() {
+    $('#about-version').textContent = `Version ${VERSION.version}`;
+    $('#about-date').textContent = VERSION.date ? `Released ${VERSION.date}` : '';
+    const facts = $('#about-facts');
+    facts.replaceChildren();
+    const fact = (k, v) => facts.append(el('dt', {}, k), el('dd', {}, v));
+    const ocr = window.BpOcr;
+    fact('Display reader', ocr ? `v${ocr.version}` : 'not loaded');
+    const net = ocr && ocr.getNet && ocr.getNet();
+    if (net) {
+      const m = net.meta;
+      fact('Digit network', `${m.params.toLocaleString()} parameters, ${m.crop[0]}×${m.crop[1]} input`);
+      if (m.real_test_acc) fact('Test accuracy', `${(m.real_test_acc * 100).toFixed(1)}% of real digits`);
+      fact('Trained on', `${m.train.synthetic.toLocaleString()} synthetic digits`);
+    } else {
+      fact('Digit network', 'not loaded (7-segment rules only)');
+    }
+    fact('Offline', 'serviceWorker' in navigator && navigator.serviceWorker.controller ? 'yes, installed' : 'not yet (open over HTTPS)');
+  }
+
+  // Ask the network (not the offline cache) which version is published.
+  async function latestVersion() {
+    const res = await fetch(`version.js?fresh=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    const m = (await res.text()).match(/version:\s*'([^']+)'(?:,\s*date:\s*'([^']*)')?/);
+    if (!m) throw new Error('unreadable');
+    return { version: m[1], date: m[2] || '' };
+  }
+  $('#check-update').addEventListener('click', async () => {
+    const status = $('#update-status'), apply = $('#apply-update');
+    status.hidden = false; status.className = 'muted'; apply.hidden = true;
+    status.textContent = 'Checking…';
+    try {
+      const latest = await latestVersion();
+      if (cmpVersion(latest.version, VERSION.version) > 0) {
+        status.className = 'new';
+        status.textContent = `Version ${latest.version} is available${latest.date ? ` (${latest.date})` : ''}.`;
+        apply.hidden = false;
+      } else {
+        status.textContent = `You have the latest version (${VERSION.version}).`;
+      }
+    } catch (err) {
+      status.textContent = navigator.onLine ? 'Could not check for updates right now.' : 'You are offline: connect to check for updates.';
+    }
+  });
+  // Fetch the new service worker (it downloads the new version), then reload once it takes over.
+  $('#apply-update').addEventListener('click', async () => {
+    const status = $('#update-status');
+    status.textContent = 'Updating…';
+    const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
+    if (!reg) { location.reload(); return; }
+    navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+    await reg.update();
+    // already up to date in the worker (e.g. it updated in the background): just reload
+    setTimeout(() => location.reload(), 4000);
+  });
 
   // ---------- offline ----------
   function updateOnline() { $('#offline-badge').hidden = navigator.onLine; }

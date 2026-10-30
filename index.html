@@ -14,6 +14,7 @@
   <header class="top">
     <h1>BP Log</h1>
     <span id="offline-badge" class="badge" hidden>offline</span>
+    <a href="#about" class="about-link" aria-label="About BP Log">ⓘ</a>
   </header>
 
   <main>
@@ -124,6 +125,36 @@
         <p id="storage-info" class="muted"></p>
       </div>
     </section>
+
+    <!-- ABOUT -->
+    <section id="tab-about" class="tab">
+      <div class="card">
+        <h2>BP Log</h2>
+        <div class="version-row">
+          <div>
+            <div class="version" id="about-version"></div>
+            <div class="muted" id="about-date"></div>
+          </div>
+          <button class="btn small" id="check-update">Check for updates</button>
+        </div>
+        <p id="update-status" class="muted" hidden></p>
+        <button class="btn primary" id="apply-update" hidden>Update now</button>
+      </div>
+      <div class="card">
+        <h2>How it reads the display</h2>
+        <p class="muted">Everything runs on this phone, offline. The parser finds the display and its three rows, then a
+          tiny neural network reads each digit.</p>
+        <dl class="facts" id="about-facts"></dl>
+      </div>
+      <div class="card">
+        <h2>Project</h2>
+        <p class="muted">Open source under the MIT license. Not a medical device: always check the values against the monitor.</p>
+        <div class="stack">
+          <a class="btn" href="https://github.com/chakib-belgaid/bp-tracker" target="_blank" rel="noopener">Code and write-up on GitHub</a>
+          <a class="btn" href="https://huggingface.co/datasets/chakibmed/bp-monitor-seven-segment" target="_blank" rel="noopener">Test dataset on Hugging Face</a>
+        </div>
+      </div>
+    </section>
   </main>
 
   <nav class="bottom">
@@ -168,6 +199,7 @@
 
   <div id="toast" class="toast" hidden></div>
 
+  <script src="version.js"></script>
   <script src="digitnet.js"></script>
   <script src="digitnet-weights.js"></script>
   <script src="ocr.js"></script>

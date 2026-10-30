@@ -26,7 +26,7 @@ correctly. It took a set of rules for finding the numbers, plus a tiny neural ne
   <tr>
     <td align="center"><img src="docs/img/app-averaged.png" width="200" alt="Averaged reading"><br><sub><b>Averaging</b>: 3 measurements, the first left out</sub></td>
     <td align="center"><img src="docs/img/app-meds.png" width="200" alt="Medication tab"><br><sub><b>Meds</b>: schedule and dose log</sub></td>
-    <td></td>
+    <td align="center"><img src="docs/img/app-about.png" width="200" alt="About page"><br><sub><b>About</b>: version and update check</sub></td>
   </tr>
 </table>
 
@@ -295,6 +295,8 @@ which can be checked by eye and against PyTorch (388 of 388 identical prediction
   tab. Every tick is saved in the dose log.
 - **Data**: export readings and the dose log as CSV, or everything as a JSON backup. You can import
   both formats again.
+- **About** (ⓘ in the header): the installed version, a *Check for updates* button that compares it
+  with the published one and installs the update, and what the reader and network are.
 
 Data is stored in the browser's IndexedDB on the phone. Export a backup now and then.
 
@@ -338,6 +340,13 @@ while connected. The stored readings stay in the phone's browser.
 Netlify, Cloudflare Pages and similar hosts work too. Only the code is hosted. Your readings never
 leave the phone.
 
+### Releasing a new version
+
+Bump `version` (and `date`) in [version.js](version.js). It's the only place the version lives:
+the About page shows it, and the offline cache is named after it. Once the new files are served,
+*About → Check for updates → Update now* installs them. Otherwise, the phone picks them up on its
+own within a couple of app launches. Readings are stored separately and are never affected.
+
 ## Reproducing the numbers
 
 Image decoding in the Node scripts uses macOS `sips`.
@@ -377,7 +386,8 @@ Some tilt is fine (about ±10° was tested).
 
 | File | Purpose |
 |---|---|
-| `index.html`, `style.css`, `app.js` | the app (tabs, editor, chart, export/import) |
+| `index.html`, `style.css`, `app.js` | the app (tabs, editor, chart, export/import, about) |
+| `version.js` | the app version (shown in About, names the offline cache) |
 | `ocr.js` | display reader: finds the display, rows and digits (browser + Node) |
 | `digitnet.js`, `digitnet-weights.js` | the neural digit reader (forward pass + trained weights) |
 | `train/` | synthetic digit generator, PyTorch training, benchmarks ([details](train/README.md)) |

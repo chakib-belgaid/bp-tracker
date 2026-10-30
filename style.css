@@ -211,3 +211,16 @@ label.wide { margin-bottom: 8px; }
 .merge p { margin: 0 0 6px; font-weight: 600; }
 .check-row { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
 .check-row input { width: 20px; height: 20px; }
+
+/* about page */
+.about-link { margin-left: auto; font-size: 22px; line-height: 1; text-decoration: none; color: var(--ink-2); padding: 6px 4px; }
+.version-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.version { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#update-status { margin: 8px 0; }
+#update-status.new { color: var(--ink); font-weight: 600; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 12px 0 0; font-size: 14px; }
+.facts dt { color: var(--ink-2); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+/* links styled as buttons */
+a.btn { text-decoration: none; }
