@@ -17,6 +17,23 @@ correctly. It took a set of rules for finding the numbers, plus a tiny neural ne
 | Training | ~42 s on Apple MPS (5.6× faster than CPU) |
 | Real test data | [chakibmed/bp-monitor-seven-segment](https://huggingface.co/datasets/chakibmed/bp-monitor-seven-segment) on Hugging Face |
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/img/app-scan.png" width="200" alt="Scan dialog"><br><sub><b>Scan</b>: values read from the photo, ready to check</sub></td>
+    <td align="center"><img src="docs/img/app-today.png" width="200" alt="Today tab"><br><sub><b>Today</b>: latest reading, 7-day average, medication</sub></td>
+    <td align="center"><img src="docs/img/app-history.png" width="200" alt="History tab"><br><sub><b>History</b>: chart and readings with their scans</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/img/app-averaged.png" width="200" alt="Averaged reading"><br><sub><b>Averaging</b>: 3 measurements, the first left out</sub></td>
+    <td align="center"><img src="docs/img/app-meds.png" width="200" alt="Medication tab"><br><sub><b>Meds</b>: schedule and dose log</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<sub>The chart, averages, medications and older history are synthetic demo data
+(`docs/demo-seed.js`). The display thumbnails on the latest readings and the scanned photo are
+real.</sub>
+
 ---
 
 ## 1. The problem
@@ -340,10 +357,15 @@ uv run python train.py                   # train, writes ../digitnet-weights.js
 uv run python bench.py                   # CPU vs MPS timings + PyTorch predictions
 node parity.mjs                          # JavaScript vs PyTorch on every real digit
 uv run python misses.py test             # which test digits are wrong
+uv run python make_dataset.py            # rebuild the Hugging Face dataset folder (data/hf)
 
+cd ..
 node docs/figures.mjs                    # regenerate the figures in docs/img
-cd train && uv run python make_dataset.py   # rebuild the Hugging Face dataset folder (data/hf)
 ```
+
+App screenshots: serve the app, open it at 390×844, run
+`(await import('/docs/demo-seed.js')).default(scans)` in the page's console (`scans` is an optional
+list of `{ url, sys, dia, pulse }` real display images), reload, and capture each tab.
 
 `test/index.html` runs the parser in the browser and shows the black-and-white image it reads.
 `test/bench.html` times it on any device. Fixtures are named `SYS-DIA-PULSE-anything.jpg`.
