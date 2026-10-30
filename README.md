@@ -15,6 +15,7 @@ correctly. It took a set of rules for finding the numbers, plus a tiny neural ne
 | Network size | 10,123 parameters, 54 KB file, plain JavaScript, no libraries |
 | Time per photo | 268 ms on an Android 10 phone, 173 ms in desktop Chrome; the network costs about 1 ms per digit |
 | Training | ~42 s on Apple MPS (5.6× faster than CPU) |
+| Real test data | [chakibmed/bp-monitor-seven-segment](https://huggingface.co/datasets/chakibmed/bp-monitor-seven-segment) on Hugging Face |
 
 ---
 
@@ -130,7 +131,9 @@ This is the second version of the network. The first one, and the trade-offs beh
 [Two versions, and keeping it simple](#two-versions-and-keeping-it-simple).
 
 **A fair test.** The real digits are split by photo into a *dev* half, which I looked at while
-tuning the generator, and a *test* half, used only for the final number.
+tuning the generator, and a *test* half, used only for the final number. Both halves, the 55
+readings and the 388 digit crops, are published as a dataset:
+[chakibmed/bp-monitor-seven-segment](https://huggingface.co/datasets/chakibmed/bp-monitor-seven-segment).
 
 ### Accuracy
 
@@ -339,6 +342,7 @@ node parity.mjs                          # JavaScript vs PyTorch on every real d
 uv run python misses.py test             # which test digits are wrong
 
 node docs/figures.mjs                    # regenerate the figures in docs/img
+cd train && uv run python make_dataset.py   # rebuild the Hugging Face dataset folder (data/hf)
 ```
 
 `test/index.html` runs the parser in the browser and shows the black-and-white image it reads.

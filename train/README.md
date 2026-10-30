@@ -15,6 +15,10 @@ found the rows and digit boxes, this small network reads each digit. The network
 
 ## Results
 
+The real digits and readings are on Hugging Face:
+[chakibmed/bp-monitor-seven-segment](https://huggingface.co/datasets/chakibmed/bp-monitor-seven-segment)
+(built by `make_dataset.py`; its card is `DATASET_CARD.md`).
+
 The test set is real digits from 55 photos of one monitor (an upper-arm BP monitor with a
 green/yellow backlit LCD). They are split by photo into **dev**, used while tuning the
 generator, and **test**, used only for the final number.
