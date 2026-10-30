@@ -1,8 +1,47 @@
 // Offline seven-segment OCR for backlit blood-pressure monitor displays.
 // Works on any ImageData-like object {width, height, data: RGBA}.
 // No dependencies, no network: runs in the browser and in Node (for tests).
+// Digits are read by a tiny neural network (digitnet.js + digitnet-weights.js) when it is
+// loaded and confident, otherwise by checking which of the 7 segments are lit.
 (function (root) {
   'use strict';
+
+  // ---- optional neural digit classifier ----
+  // default crop size; the loaded model's own size (weights meta.crop) takes precedence
+  const CROP_W = 24, CROP_H = 32, CROP_PAD = 0.15, NOT_DIGIT = 10; // keep in sync with train/common.py
+  let net;
+  function getNet() {
+    if (net === undefined) {
+      try {
+        const node = typeof module !== 'undefined' && module.exports;
+        const lib = node ? require('./digitnet.js') : root.DigitNet;
+        const weights = node ? require('./digitnet-weights.js') : root.DigitNetWeights;
+        net = lib && weights ? lib.create(weights) : null;
+      } catch (e) { net = null; }
+    }
+    return net;
+  }
+
+  // Ink map of a digit cell (0 = background, 255 = darkest ink), padded by CROP_PAD on every
+  // side and resized to the model's crop size (CROP_W x CROP_H by default). `ratio` is the pixel / local-background map from
+  // binarize (128 = background), so the crop does not depend on the backlight colour.
+  function cropInk(ratio, w, h, c, size) {
+    const [CW, CH] = size || (getNet() ? getNet().meta.crop : [CROP_W, CROP_H]);
+    const cw = c.x1 - c.x0 + 1, ch = c.y1 - c.y0 + 1;
+    const X0 = c.x0 - cw * CROP_PAD, Y0 = c.y0 - ch * CROP_PAD, SW = cw * (1 + 2 * CROP_PAD), SH = ch * (1 + 2 * CROP_PAD);
+    const at = (x, y) => {
+      x = Math.min(w - 1, Math.max(0, x)); y = Math.min(h - 1, Math.max(0, y));
+      return Math.max(0, Math.min(255, (128 - ratio[y * w + x]) * 2));
+    };
+    const out = new Uint8Array(CW * CH);
+    for (let j = 0; j < CH; j++) for (let i = 0; i < CW; i++) {
+      const fx = X0 + (i + 0.5) * SW / CW - 0.5, fy = Y0 + (j + 0.5) * SH / CH - 0.5;
+      const x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+      const v = (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+      out[j * CW + i] = Math.round(v);
+    }
+    return out;
+  }
 
   // Segment order: a (top), b (top-right), c (bottom-right), d (bottom),
   // e (bottom-left), f (top-left), g (middle)
@@ -79,9 +118,9 @@
   }
 
   // Rotate a binary mask by `deg` around its centre (nearest neighbour).
-  function rotateMask(mask, w, h, deg) {
+  function rotateMask(mask, w, h, deg, fill) {
     const t = deg * Math.PI / 180, sn = Math.sin(t), cs = Math.cos(t);
-    const out = new Uint8Array(w * h), cx = w / 2, cy = h / 2;
+    const out = new Uint8Array(w * h).fill(fill || 0), cx = w / 2, cy = h / 2;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         // inverse mapping: output pixel -> source pixel
@@ -193,7 +232,7 @@
     const thr = Math.min(118, Math.max(77, otsu(ratio)));
     const mask = new Uint8Array(n);
     for (let i = 0; i < n; i++) mask[i] = ratio[i] < thr ? 1 : 0;
-    return mask;
+    return { mask, ratio };
   }
 
   // Separable sliding max (isMax) / min filter with radius r.
@@ -217,12 +256,15 @@
     return out;
   }
 
-  // Drop dark blobs touching the crop edge (bezel, shadows) and huge blobs.
+  // Drop dark blobs touching the crop edge (bezel, shadows) and huge blobs. At the bottom
+  // edge only long runs go: the bottom bar of a PULSE digit can touch it.
   function clearBorderBlobs(mask, w, h) {
     const { boxes, label } = components(mask, w, h, 0);
     const kill = new Set();
     for (const b of boxes) {
-      if (b.x0 === 0 || b.y0 === 0 || b.x1 === w - 1 || b.y1 === h - 1 || b.area > w * h * 0.08) kill.add(b.id);
+      const sides = b.x0 === 0 || b.y0 === 0 || b.x1 === w - 1;
+      const bottomRun = b.y1 === h - 1 && b.x1 - b.x0 + 1 > w * 0.15;
+      if (sides || bottomRun || b.area > w * h * 0.08) kill.add(b.id);
     }
     for (let p = 0; p < w * h; p++) if (kill.has(label[p])) mask[p] = 0;
   }
@@ -241,13 +283,17 @@
   }
 
   // Low-contrast photos sometimes only show segment outlines: fill small enclosed holes.
+  // Only thin / elongated holes (the inside of an outlined segment) are filled; the
+  // roughly square counters inside small 0, 6, 8, 9 digits are kept open.
   function fillHoles(mask, w, h, maxArea) {
     const inv = new Uint8Array(w * h);
     for (let p = 0; p < w * h; p++) inv[p] = mask[p] ? 0 : 1;
     const { boxes, label } = components(inv, w, h, 0);
     const fill = new Set();
     for (const b of boxes) {
-      if (b.area <= maxArea && b.x0 > 0 && b.y0 > 0 && b.x1 < w - 1 && b.y1 < h - 1) fill.add(b.id);
+      const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+      const thin = Math.min(bw, bh) <= Math.max(3, w * 0.012) || Math.max(bw, bh) >= Math.min(bw, bh) * 2.5;
+      if (thin && b.area <= maxArea && b.x0 > 0 && b.y0 > 0 && b.x1 < w - 1 && b.y1 < h - 1) fill.add(b.id);
     }
     for (let p = 0; p < w * h; p++) if (fill.has(label[p])) mask[p] = 1;
   }
@@ -278,7 +324,11 @@
   function decodeDigit(mask, w, box, digitW, slant) {
     const { x0, x1, y0, y1 } = box, h = y1 - y0 + 1;
     const bw = x1 - x0 + 1;
-    if (bw < digitW * 0.45) return { value: 1, segs: '0110000' };
+    // the digit's full cell (a "1" only lights the right side of it). In a row of only "1"s
+    // the widest box is a lone stroke, so fall back to a typical digit width for the row.
+    const cellW = digitW > h * 0.35 ? digitW : Math.round(h * 0.55);
+    const cell = { x0: x1 - cellW + 1, x1, y0, y1 };
+    if (bw < digitW * 0.45 || bw < h * 0.3) return { value: 1, segs: '0110000', cell };
     // use the typical (slanted) digit width anchored on the right edge;
     // W is the upright width once the italic shift is removed
     const L = x1 - digitW + 1, W = Math.max(digitW * 0.5, digitW - slant * h);
@@ -303,15 +353,15 @@
     const cut = Math.max(0.12, Math.max(...scores) * 0.3);
     const segs = scores.map(d => (d > cut ? '1' : '0')).join('');
     const value = DIGITS[segs];
-    return { value: value === undefined ? null : value, segs, scores };
+    return { value: value === undefined ? null : value, segs, scores, cell };
   }
 
   // Split a text row into digit boxes using the vertical projection.
-  function rowBoxes(mask, w, row, xMin) {
+  function rowBoxes(mask, w, row, xMin, xMax) {
     const [ry0, ry1] = row;
     const rh = ry1 - ry0 + 1;
     const prof = new Float32Array(w);
-    for (let x = xMin; x < w; x++) {
+    for (let x = xMin; x <= xMax; x++) {
       let c = 0;
       for (let y = ry0; y <= ry1; y++) c += mask[y * w + x];
       prof[x] = c;
@@ -330,11 +380,90 @@
     });
   }
 
-  function decodeRow(mask, w, row, boxes, slant) {
+  // Text rows inside [y0, y1] x [x0, x1]: any empty scan line splits rows.
+  function textRows(mask, w, y0, y1, x0, x1, minH) {
+    if (y1 <= y0) return [];
+    const prof = new Float32Array(y1 - y0 + 1);
+    for (let y = y0; y <= y1; y++) {
+      let c = 0;
+      for (let x = x0; x <= x1; x++) c += mask[y * w + x];
+      prof[y - y0] = c;
+    }
+    return bands(prof, 0, 1).map(([a, b]) => [a + y0, b + y0]).filter(([a, b]) => b - a + 1 > minH);
+  }
+
+  // Find the printed "mmHg" label between the DIA and PULSE rows: 3-5 small glyphs of similar
+  // height, side by side on one line, in the lower part of the display. Returns its box and
+  // u = glyph height, or null.
+  function findMmHg(mask, w, h, xMin) {
+    const { boxes } = components(mask, w, h, 4);
+    const glyphs = boxes.filter((b) => {
+      const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+      return b.x1 >= xMin && b.y0 > h * 0.4 && b.y1 < h * 0.95 &&
+        bh >= h * 0.012 && bh <= h * 0.06 && bw <= w * 0.08 && bw >= 2;
+    }).sort((a, b) => a.x0 - b.x0);
+    let best = null;
+    for (let i = 0; i < glyphs.length; i++) {
+      // grow a run of neighbours on the same line
+      const run = [glyphs[i]];
+      for (let j = i + 1; j < glyphs.length; j++) {
+        const last = run[run.length - 1], g = glyphs[j];
+        const lh = last.y1 - last.y0 + 1;
+        const cy = (g.y0 + g.y1) / 2, lcy = (last.y0 + last.y1) / 2;
+        if (g.x0 - last.x1 > lh * 1.2) break;
+        if (Math.abs(cy - lcy) > lh * 0.6) continue;
+        run.push(g);
+      }
+      if (run.length < 3 || run.length > 6) continue;
+      const box = {
+        x0: Math.min(...run.map((g) => g.x0)), x1: Math.max(...run.map((g) => g.x1)),
+        y0: Math.min(...run.map((g) => g.y0)), y1: Math.max(...run.map((g) => g.y1)),
+      };
+      const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
+      if (bw < w * 0.08 || bw > w * 0.35 || bw < bh * 2.2) continue;
+      // tall digit strokes must exist both above and below the label
+      const colStroke = (ya, yb) => {
+        let n = 0;
+        for (let y = Math.max(0, ya); y <= Math.min(h - 1, yb); y++) for (let x = box.x0; x <= box.x1; x++) n += mask[y * w + x];
+        return n;
+      };
+      if (!colStroke(box.y0 - h * 0.15, box.y0 - 1) || !colStroke(box.y1 + 1, box.y1 + h * 0.15)) continue;
+      // prefer the right-most label (digits are right-aligned with it)
+      if (!best || box.x1 > best.x1) best = { ...box, u: Math.max(...run.map((g) => g.y1 - g.y0 + 1)), glyphs: run.length };
+    }
+    return best;
+  }
+
+  // nn: { ratio, h } to let the neural classifier read each digit cell (or null)
+  function decodeRow(mask, w, row, boxes, slant, nn) {
     if (!boxes.length) return null;
+    // numbers are right-aligned: keep the right-most group (drops e.g. the memory index)
+    const rh = row[1] - row[0] + 1;
+    const group = [boxes[boxes.length - 1]];
+    for (let i = boxes.length - 2; i >= 0 && group.length < 3; i--) {
+      if (group[0].x0 - boxes[i].x1 > rh * 0.85) break;
+      group.unshift(boxes[i]);
+    }
+    boxes = group;
     const digitW = Math.max(...boxes.map(b => b.x1 - b.x0 + 1));
-    const digits = boxes.map(b => decodeDigit(mask, w, { ...b, y0: row[0], y1: row[1] }, digitW, slant));
-    const value = digits.some(d => d.value === null) || digits.length > 3 ? null : Number(digits.map(d => d.value).join(''));
+    let digits = boxes.map(b => decodeDigit(mask, w, { ...b, y0: row[0], y1: row[1] }, digitW, slant));
+    const model = nn && getNet();
+    if (model) {
+      digits = digits.map((d) => {
+        const p = model.predict(cropInk(nn.ratio, w, nn.h, d.cell));
+        let k = 0;
+        for (let c = 1; c < p.length; c++) if (p[c] > p[k]) k = c;
+        const out = { ...d, segValue: d.value, nnClass: k, nnProb: +p[k].toFixed(3) };
+        if (p[k] >= 0.6) out.value = k === NOT_DIGIT ? null : k;
+        if (k === NOT_DIGIT && p[k] >= 0.6) out.notDigit = true;
+        return out;
+      });
+    }
+    // a mark left of the number that is not a digit (the heart / memory icon) is dropped
+    while (digits.length > 1 && (digits[0].notDigit || (digits[0].value === null && boxes[1].x0 - boxes[0].x1 > rh * 0.3))) {
+      digits = digits.slice(1); boxes = boxes.slice(1);
+    }
+    const value = digits.some(d => d.value === null) ? null : Number(digits.map(d => d.value).join(''));
     return { value, digits, boxes, slant };
   }
 
@@ -358,53 +487,181 @@
     return Math.max(-0.1, Math.min(0.25, vals[vals.length >> 1]));
   }
 
+  // Row geometry of the display, as fractions of its height (measured on real scans).
+  const LAYOUT = { sys: 0.27, dia: 0.54, pulse: 0.86, digitH: 0.23, pulseRatio: 0.75 };
+
+  // Pick the SYS / DIA / PULSE rows. Candidates are the ink bands of the row profile,
+  // unions of neighbouring bands (a digit can be cut by a thin gap) and halves of
+  // over-tall bands (two rows touching). Each (SYS, DIA, PULSE) triple is scored on:
+  // SYS and DIA equally tall, PULSE ~3/4 of that, rows near their usual place, the
+  // "mmHg" label (if found) between DIA and PULSE, and no tall ink left unexplained.
+  function chooseRows(mask, w, h, xMin, xMax, anchor) {
+    const prof = new Float32Array(h);
+    let maxP = 0;
+    for (let y = 0; y < h; y++) {
+      let c = 0;
+      for (let x = xMin; x <= xMax; x++) c += mask[y * w + x];
+      prof[y] = c; if (c > maxP) maxP = c;
+    }
+    let bs = bands(prof, Math.max(0, maxP * 0.03), 1).filter(([a, b]) => b - a + 1 >= h * 0.02);
+    // the clock / date line at the very top is never part of SYS
+    if (bs.length && (bs[0][0] + bs[0][1]) / 2 < h * 0.13 && bs[0][1] - bs[0][0] + 1 < h * 0.15) bs = bs.slice(1);
+    const key = (r) => r[0] + ':' + r[1];
+    const cands = new Map();
+    const add = (r) => { if (r[1] - r[0] + 1 >= h * 0.06) cands.set(key(r), r); };
+    for (let i = 0; i < bs.length; i++) {
+      for (let j = i; j < bs.length && j <= i + 3; j++) {
+        if (j > i && bs[j][0] - bs[j - 1][1] > h * 0.04) break;
+        add([bs[i][0], bs[j][1]]);
+      }
+    }
+    for (const r of [...cands.values()]) {
+      const rh = r[1] - r[0] + 1;
+      if (rh < h * 0.3) continue;
+      // split at the emptiest line in the middle part
+      let at = -1, low = Infinity;
+      for (let y = r[0] + Math.round(rh * 0.3); y <= r[0] + Math.round(rh * 0.7); y++) if (prof[y] < low) { low = prof[y]; at = y; }
+      if (at > 0) { add([r[0], at - 1]); add([at + 1, r[1]]); }
+    }
+    const list = [...cands.values()].sort((p, q) => p[0] - q[0]);
+    const tall = bs.filter(([a, b]) => b - a + 1 >= h * 0.08);
+    const sq = (v) => v * v;
+    const ht = (r) => r[1] - r[0] + 1;
+    const mid = (r) => (r[0] + r[1]) / 2 / h;
+    let best = null;
+    for (const S of list) for (const D of list) {
+      if (D[0] <= S[1]) continue;
+      const hs = ht(S), hd = ht(D), big = (hs + hd) / 2;
+      let base = sq((hs - hd) / Math.max(hs, hd) / 0.1) + sq((big / h - LAYOUT.digitH) / 0.06) +
+        sq((mid(S) - LAYOUT.sys) / 0.08) + sq((mid(D) - LAYOUT.dia) / 0.08);
+      if (anchor && D[1] > anchor.y1) base += 50;
+      if (best && base >= best.cost) continue;
+      for (const P of [null, ...list]) {
+        if (P && P[0] <= D[1]) continue;
+        let cost = base;
+        if (P) {
+          cost += sq(Math.max(0, Math.abs(ht(P) / big - LAYOUT.pulseRatio) - 0.1) / 0.08) + sq((mid(P) - LAYOUT.pulse) / 0.1);
+          if (anchor && P[0] < anchor.y0) cost += 50;
+        } else cost += 8; // pulse can be faint; it is searched for again below
+        // tall ink bands below the clock that no chosen row covers
+        for (const t of tall) {
+          if (t[1] < S[0] - h * 0.02) continue;
+          const covered = [S, D, P].some((r) => r && t[0] >= r[0] - 2 && t[1] <= r[1] + 2);
+          if (!covered) cost += 4 * ht(t) / (h * 0.1);
+        }
+        if (!best || cost < best.cost) best = { cost, rows: [S, D, P] };
+      }
+    }
+    return best ? best.rows : [null, null, null];
+  }
+
+  // Re-binarize one region with its own threshold (faint rows, uneven backlight).
+  function localMask(ratio, w, h, x0, y0, x1, y1, thr) {
+    if (!thr) {
+      const vals = [];
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) vals.push(ratio[y * w + x]);
+      thr = Math.min(122, Math.max(70, otsu(vals)));
+    }
+    const m = new Uint8Array(w * h);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) m[y * w + x] = ratio[y * w + x] < thr ? 1 : 0;
+    return m;
+  }
+
   function recognize(input, opts) {
     opts = opts || {};
     const img = resize(input, 1600);
     const lcd = opts.lcd || findLcd(img);
     if (!lcd) return { ok: false, error: 'Display not found' };
-    // trim the LCD bezel a little
-    const inset = { x: lcd.x + Math.round(lcd.w * 0.02), y: lcd.y + Math.round(lcd.h * 0.02), w: Math.round(lcd.w * 0.96), h: Math.round(lcd.h * 0.96) };
+    // trim the bezel off the sides and top, but not the bottom: the PULSE digits sit right
+    // at the bottom edge of the lit area
+    const ix = Math.round(lcd.w * 0.02), iy = Math.round(lcd.h * 0.02);
+    const inset = { x: lcd.x + ix, y: lcd.y + iy, w: lcd.w - 2 * ix, h: Math.min(img.height - lcd.y - iy, lcd.h - iy + Math.round(lcd.h * 0.01)) };
     const lcdImg = scaleTo(crop(img, inset), 500);
     const { width: w, height: h } = lcdImg;
-    let mask = binarize(lcdImg);
+    let { mask, ratio } = binarize(lcdImg);
     clearBorderBlobs(mask, w, h);
     // straighten tilted photos so text rows are horizontal
     const angle = estimateSkew(mask, w, h);
     if (Math.abs(angle) > 0.4) {
       mask = rotateMask(mask, w, h, angle);
+      ratio = rotateMask(ratio, w, h, angle, 128);
       clearBorderBlobs(mask, w, h);
     }
+    const clean = (m) => { m = close(m, w, h); fillHoles(m, w, h, w * h * 0.004); return m; };
     // close tiny breaks in faint, outline-only segments, then fill them in
-    mask = close(mask, w, h);
-    fillHoles(mask, w, h, w * h * 0.004);
+    mask = clean(mask);
 
     // The numbers occupy the right side of the display; labels/icons are on the left.
     const xMin = Math.round(w * 0.38);
-    const rowProf = new Float32Array(h);
-    for (let y = 0; y < h; y++) {
-      let c = 0;
-      for (let x = xMin; x < w; x++) c += mask[y * w + x];
-      rowProf[y] = c;
+    const anchor = opts.noAnchor ? null : findMmHg(mask, w, h, xMin);
+    // digits end a little right of the "mmHg" label, which drops bezel noise further right
+    const xMax = anchor ? Math.min(w - 1, anchor.x1 + anchor.u * 2) : w - 1;
+    const rows = chooseRows(mask, w, h, xMin, xMax, anchor);
+
+    // No pulse row in the global mask: look again below DIA with a local threshold.
+    if (rows[1] && !rows[2]) {
+      const y0 = Math.max(rows[1][1] + Math.round(h * 0.04), anchor ? anchor.y1 + 1 : 0), y1 = h - 2;
+      if (y1 - y0 > h * 0.08) {
+        const m = localMask(ratio, w, h, xMin, y0, xMax, y1);
+        clearBorderBlobs(m, w, h);
+        const lm = clean(m);
+        const found = textRows(lm, w, y0, y1, xMin, xMax, h * 0.08).sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))[0];
+        if (found) { rows[2] = found; for (let y = y0; y <= y1; y++) for (let x = xMin; x <= xMax; x++) mask[y * w + x] = lm[y * w + x]; }
+      }
     }
-    // any empty scan line splits rows (keeps the small "mmHg" label apart from the pulse)
-    const rows = bands(rowProf, 0, 1)
-      .filter(([a, b]) => b - a + 1 > h * 0.06);
-    // SYS / DIA / PULSE are the three tallest text rows, in vertical order
-    const tallest = rows.slice().sort((a, b) => (b[1] - b[0]) - (a[1] - a[0])).slice(0, 3)
-      .sort((a, b) => a[0] - b[0]);
-    const rowInfo = tallest.map(row => ({ row, boxes: rowBoxes(mask, w, row, xMin) }));
-    const slant = estimateSlant(mask, w, rowInfo);
-    const read = rowInfo.map(r => decodeRow(mask, w, r.row, r.boxes, slant));
+
+    // Tighten each row to the typical top / bottom of its digit boxes (a row band can
+    // include a bit of the clock, the "mmHg" label or the next row).
+    const median = (v) => { const a = v.slice().sort((p, q) => p - q); return a[a.length >> 1]; };
+    for (let i = 0; i < 3; i++) {
+      if (!rows[i]) continue;
+      const bx = rowBoxes(mask, w, rows[i], xMin, xMax);
+      if (bx.length < 2) continue;
+      // highest top / lowest bottom, ignoring boxes that stick out far past the others
+      // (a "1" or "4" has no top bar, so the median would cut the top of the other digits)
+      const tol = (rows[i][1] - rows[i][0]) * 0.12, m0 = median(bx.map(b => b.y0)), m1 = median(bx.map(b => b.y1));
+      rows[i] = [Math.min(...bx.map(b => b.y0).filter(y => y >= m0 - tol)), Math.max(...bx.map(b => b.y1).filter(y => y <= m1 + tol))];
+    }
+    const rowInfo = rows.map(row => ({ row, boxes: row ? rowBoxes(mask, w, row, xMin, xMax) : [] }));
+    // SYS and DIA digits are right-aligned with each other: a box starting right of where
+    // the other big row ends is the display edge or glare, not a digit. (PULSE is smaller and
+    // sits a little further right, so it is left alone.)
+    rowInfo.forEach((ri, i) => {
+      if (i === 2) return;
+      const ends = rowInfo.filter((o, j) => j !== i && j !== 2 && o.boxes.length).map(o => o.boxes[o.boxes.length - 1].x1);
+      if (!ends.length || !ri.boxes.length) return;
+      const edge = Math.max(...ends);
+      ri.boxes = ri.boxes.filter(b => b.x0 < edge - (ri.row[1] - ri.row[0]) * 0.05);
+    });
+    const slant = estimateSlant(mask, w, rowInfo.filter(r => r.row));
+    const nn = opts.noNet ? null : { ratio, h };
+    const read = rowInfo.map(r => (r.row ? decodeRow(mask, w, r.row, r.boxes, slant, nn) : null));
+    // A row that did not decode to a plausible value: retry it with thresholds of its own,
+    // from its Otsu cut to increasingly lenient ones (faint PULSE digits).
+    const RANGE = [[60, 260], [30, 160], [30, 220]];
+    const plausible = (r, i) => r && r.value !== null && r.value >= RANGE[i][0] && r.value <= RANGE[i][1] &&
+      // SYS is always above DIA (retries with lenient thresholds must not "invent" a value)
+      (i !== 0 || !read[1] || read[1].value === null || r.value > read[1].value);
+    [1, 2, 0].forEach((i) => {
+      const r = read[i], row = rows[i];
+      if (!row || plausible(r, i)) return;
+      const pad = Math.round((row[1] - row[0]) * 0.08);
+      const y0 = Math.max(1, row[0] - pad), y1 = Math.min(h - 2, row[1] + pad);
+      for (const thr of [0, 104, 110, 116, 122]) {
+        const lm = clean(localMask(ratio, w, h, xMin, y0, xMax, y1, thr));
+        const r2 = decodeRow(lm, w, row, rowBoxes(lm, w, row, xMin, xMax), slant, nn);
+        if (plausible(r2, i)) { read[i] = { ...r2, local: thr || 'otsu' }; return; }
+      }
+    });
     const [sys, dia, pulse] = read.map(r => (r ? r.value : null));
     const ok = [sys, dia, pulse].every(v => v !== null) && sys > dia;
     return {
       ok, sys, dia, pulse,
-      debug: { lcd, angle, rows, tallest, read, mask, w, h },
+      debug: { lcd, angle, anchor, tallest: rows.filter(Boolean), rows, read, mask, ratio, w, h },
     };
   }
 
-  const api = { recognize, findLcd, binarize, resize };
+  const api = { recognize, findLcd, binarize, resize, cropInk, getNet, version: 4 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BpOcr = api;
 })(typeof self !== 'undefined' ? self : this);

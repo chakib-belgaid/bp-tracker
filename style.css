@@ -124,7 +124,7 @@ main { max-width: 640px; margin: 0 auto; padding: 0 16px; }
 .day-head { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding-top: 14px !important; border-top: 0 !important; }
 
 .form { display: grid; gap: 8px; margin-top: 12px; }
-input:not([type=checkbox]) {
+input:not([type=checkbox]), select {
   width: 100%; min-height: 44px; padding: 0 12px;
   border: 1px solid var(--border); border-radius: 10px;
   background: var(--page); color: var(--ink); font: inherit;
@@ -194,15 +194,20 @@ label.wide { margin-bottom: 8px; }
   background: var(--ink); color: var(--page); padding: 10px 16px; border-radius: 10px; font-size: 14px;
 }
 
-/* multi-measurement series */
+/* averaged readings */
+.parts-head { font-size: 13px; color: var(--ink-2); margin: 0 0 4px; }
 .series-list { list-style: none; margin: 0 0 8px; padding: 0; }
 .series-list li {
   display: flex; align-items: center; gap: 8px; padding: 6px 0;
   border-top: 1px solid var(--grid); font-variant-numeric: tabular-nums;
 }
 .series-list li:first-child { border-top: 0; }
-.series-list li span { color: var(--ink-2); font-size: 13px; min-width: 18px; }
+.series-list li span { color: var(--ink-2); font-size: 13px; }
 .series-list li b { flex: 1; }
-.series-label { font-size: 13px; font-weight: 700; color: var(--ink-2); margin: 4px 0 6px; }
+.series-list .thumb { width: 48px; height: 34px; object-fit: cover; border-radius: 6px; background: var(--grid); }
 .series-avg { font-size: 15px; font-weight: 700; margin: 0 0 8px; font-variant-numeric: tabular-nums; }
-.series-add { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.fields input[readonly] { background: var(--grid); }
+.merge { background: var(--page); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+.merge p { margin: 0 0 6px; font-weight: 600; }
+.check-row { display: flex; align-items: center; gap: 8px; color: var(--ink-2); }
+.check-row input { width: 20px; height: 20px; }

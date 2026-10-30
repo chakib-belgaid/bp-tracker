@@ -107,6 +107,19 @@
         </label>
       </div>
       <div class="card">
+        <h2>Settings</h2>
+        <label class="wide">Average readings taken within
+          <select id="window-select">
+            <option value="0">Off</option>
+            <option value="2">2 min</option>
+            <option value="5">5 min</option>
+            <option value="10">10 min</option>
+            <option value="15">15 min</option>
+          </select>
+        </label>
+        <p class="muted">Readings saved within this time of each other become one reading. With 3 or more, the first one is left out of the average because it usually reads high.</p>
+      </div>
+      <div class="card">
         <h2>Storage</h2>
         <p id="storage-info" class="muted"></p>
       </div>
@@ -128,29 +141,19 @@
         <canvas id="preview-canvas"></canvas>
         <p id="scan-status" class="scan-status"></p>
       </div>
-      <div id="series" class="series" hidden>
-        <ol id="series-list" class="series-list"></ol>
-        <p id="series-current" class="series-label"></p>
+      <div id="parts" hidden>
+        <h3 class="parts-head">Measurements</h3>
+        <ol id="parts-list" class="series-list"></ol>
       </div>
       <div class="fields">
         <label>SYS<input name="sys" type="number" inputmode="numeric" min="50" max="300" required></label>
         <label>DIA<input name="dia" type="number" inputmode="numeric" min="30" max="200" required></label>
         <label>Pulse<input name="pulse" type="number" inputmode="numeric" min="30" max="250"></label>
       </div>
-      <p id="series-avg" class="series-avg" hidden></p>
-      <div id="series-add" class="series-add">
-        <span class="muted">Add a measurement to average:</span>
-        <div class="row gap">
-          <label class="btn small" id="next-scan-btn">
-            <input id="next-scan" type="file" accept="image/*" capture="environment" hidden>
-            Photo
-          </label>
-          <label class="btn small" id="next-pick-btn">
-            <input id="next-pick" type="file" accept="image/*" hidden>
-            Gallery
-          </label>
-          <button class="btn small" type="button" id="next-manual">Type</button>
-        </div>
+      <p id="avg-info" class="series-avg" hidden></p>
+      <div id="merge-box" class="merge" hidden>
+        <p id="merge-note"></p>
+        <label class="check-row"><input type="checkbox" id="keep-separate"> Keep separate</label>
       </div>
       <label class="wide">Date &amp; time<input name="ts" type="datetime-local" required></label>
       <label class="wide">Note<input name="note" placeholder="optional (left arm, after coffee…)" autocomplete="off"></label>
@@ -165,6 +168,8 @@
 
   <div id="toast" class="toast" hidden></div>
 
+  <script src="digitnet.js"></script>
+  <script src="digitnet-weights.js"></script>
   <script src="ocr.js"></script>
   <script src="app.js"></script>
 </body>

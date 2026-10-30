@@ -3,12 +3,12 @@
   'use strict';
 
   // ---------- storage ----------
-  const STORES = ['readings', 'meds', 'doses'];
+  const STORES = ['readings', 'meds', 'doses', 'settings'];
   let dbPromise;
   function db() {
     if (!dbPromise) {
       dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open('bp-tracker', 1);
+        const req = indexedDB.open('bp-tracker', 2);
         req.onupgradeneeded = () => {
           for (const s of STORES) if (!req.result.objectStoreNames.contains(s)) req.result.createObjectStore(s, { keyPath: 'id' });
         };
@@ -75,9 +75,14 @@
 
   // ---------- state ----------
   let readings = [], meds = [], doses = [];
+  const DEFAULT_SETTINGS = { id: 'settings', windowMin: 5 };
+  let settings = DEFAULT_SETTINGS;
   let range = 30;
   async function load() {
-    [readings, meds, doses] = await Promise.all(STORES.map(all));
+    let stored;
+    [readings, meds, doses, stored] = await Promise.all(STORES.map(all));
+    settings = { ...DEFAULT_SETTINGS, ...stored.find((x) => x.id === 'settings') };
+    $('#window-select').value = String(settings.windowMin);
     readings.sort((a, b) => b.ts - a.ts);
     doses.sort((a, b) => b.ts - a.ts);
     meds.sort((a, b) => a.created - b.created);
@@ -175,7 +180,7 @@
         r.thumb ? el('img', { class: 'thumb', src: r.thumb, alt: '' }) : null,
         el('div', { class: 'main' },
           el('div', { class: 'title' }, `${r.sys}/${r.dia}`, r.pulse ? el('span', { class: 'muted' }, `  ·  ${r.pulse} bpm`) : null),
-          el('div', { class: 'sub' }, timeStr(r.ts) + (r.parts && r.parts.length > 1 ? ` · avg of ${r.parts.length}` : '') + (r.note ? ` · ${r.note}` : ''))),
+          el('div', { class: 'sub' }, [timeStr(r.ts), avgLabel(partsOf(r).length), r.note].filter(Boolean).join(' · '))),
         statusEl(r)));
     }
     const s = avg(rs, 'sys'), dd = avg(rs, 'dia');
@@ -302,156 +307,195 @@
   // ---------- reading editor + OCR ----------
   const dlg = $('#editor'), form = $('#reading-form');
   let editing = null, pendingThumb = null, pendingSource = 'manual';
-  // Measurements already taken for the reading being entered; saved as their average.
-  let series = [];
+  // what the OCR read for the current scan, kept next to the corrected values (test data)
+  let pendingOcr = null;
+  // measurements of the reading being edited (a working copy, saved on Save)
+  let editParts = [];
 
   const num = (v) => (v === '' ? null : Number(v));
-  const fmtPart = (p) => `${p.sys}/${p.dia}${p.pulse ? ` · ${p.pulse} bpm` : ''}`;
-  const fieldsEmpty = () => form.elements.sys.value === '' && form.elements.dia.value === '' && form.elements.pulse.value === '';
-  const currentPart = () => {
-    const p = { sys: num(form.elements.sys.value), dia: num(form.elements.dia.value), pulse: num(form.elements.pulse.value) };
-    return p.sys && p.dia ? p : null;
-  };
+  const fmtVals = (p) => `${p.sys}/${p.dia}${p.pulse ? ` · ${p.pulse} bpm` : ''}`;
+
+  // A reading is a group of measurements taken within the aggregation window.
+  const partsOf = (r) => (r.parts && r.parts.length ? r.parts
+    : [{ ts: r.ts, sys: r.sys, dia: r.dia, pulse: r.pulse, thumb: r.thumb || null, source: r.source }]);
+  // Home BP practice (AHA 2017 / ESH 2023): average 2 readings; with 3 or more, leave out the
+  // first one, which tends to read high.
   function averageOf(parts) {
-    const pulses = parts.filter((p) => p.pulse);
+    const used = parts.length >= 3 ? parts.slice(1) : parts;
+    const pulses = used.filter((p) => p.pulse);
     const mean = (list, k) => Math.round(list.reduce((a, p) => a + p[k], 0) / list.length);
-    return { sys: mean(parts, 'sys'), dia: mean(parts, 'dia'), pulse: pulses.length ? mean(pulses, 'pulse') : null };
+    return { sys: mean(used, 'sys'), dia: mean(used, 'dia'), pulse: pulses.length ? mean(pulses, 'pulse') : null };
   }
-  // Every measurement in the series, including the one still in the fields.
-  function seriesParts() {
-    const cur = currentPart();
-    return cur ? [...series, cur] : series.slice();
+  function avgLabel(n) {
+    return n >= 3 ? `avg of ${n - 1} (first of ${n} left out)` : n === 2 ? 'avg of 2' : '';
+  }
+  // Recompute the stored values of a reading from its measurements.
+  function withParts(rec, parts) {
+    parts = parts.slice().sort((a, b) => a.ts - b.ts);
+    return { ...rec, parts, ...averageOf(parts), ts: parts[0].ts, thumb: parts[0].thumb || null };
+  }
+  // The saved reading a new measurement at time t would join: the whole group must still fit
+  // in the window; the nearest one wins.
+  function groupFor(t) {
+    const w = settings.windowMin * 6e4;
+    if (!w) return null;
+    let best = null;
+    for (const r of readings) {
+      const ts = partsOf(r).map((p) => p.ts);
+      if (Math.max(t, ...ts) - Math.min(t, ...ts) > w) continue;
+      if (!best || Math.abs(t - r.ts) < Math.abs(t - best.ts)) best = r;
+    }
+    return best;
   }
 
-  function renderSeries() {
-    const n = series.length;
-    $('#series').hidden = !n;
-    $('#series-list').replaceChildren(...series.map((p, i) => el('li', {},
-      el('span', {}, `${i + 1}.`), el('b', {}, fmtPart(p)),
-      el('button', { type: 'button', class: 'btn small', 'aria-label': `Remove measurement ${i + 1}`, onclick: () => { series.splice(i, 1); renderSeries(); } }, 'Remove'))));
-    $('#series-current').textContent = `Measurement ${n + 1}`;
-    const parts = seriesParts();
-    const avgEl = $('#series-avg');
-    avgEl.hidden = parts.length < 2;
-    if (parts.length >= 2) avgEl.textContent = `Average of ${parts.length}: ${fmtPart(averageOf(parts))}`;
-    // with earlier measurements, the fields may stay empty (e.g. a failed last scan)
-    const optional = n > 0 && fieldsEmpty();
-    form.elements.sys.required = form.elements.dia.required = !optional;
-    $('#save-reading').textContent = parts.length >= 2 ? `Save average (${parts.length})` : 'Save';
+  function fieldsPart() {
+    return {
+      ts: new Date(form.elements.ts.value).getTime() || Date.now(),
+      sys: num(form.elements.sys.value), dia: num(form.elements.dia.value), pulse: num(form.elements.pulse.value),
+      thumb: pendingThumb, source: pendingSource,
+      ...(pendingOcr ? { ocr: pendingOcr } : {}),
+    };
   }
-  for (const f of ['sys', 'dia', 'pulse']) form.elements[f].addEventListener('input', renderSeries);
 
-  function clearFields() {
-    for (const f of ['sys', 'dia', 'pulse']) { form.elements[f].value = ''; form.elements[f].classList.remove('check'); }
+  // New reading: say whether it will be merged, and into what.
+  function renderMerge() {
+    const box = $('#merge-box');
+    const g = editing ? null : groupFor(fieldsPart().ts);
+    box.hidden = !g;
+    if (!g) return;
+    const n = partsOf(g).length, cur = fieldsPart();
+    const result = cur.sys && cur.dia ? ` → ${fmtVals(averageOf([...partsOf(g), cur].sort((a, b) => a.ts - b.ts)))}` : '';
+    $('#merge-note').textContent = $('#keep-separate').checked
+      ? `Will be saved separately from the ${timeStr(g.ts)} reading.`
+      : `Will be averaged with ${n} reading${n === 1 ? '' : 's'} from ${timeStr(g.ts)}${result}`;
+  }
+  for (const f of ['sys', 'dia', 'pulse', 'ts']) form.elements[f].addEventListener('input', renderMerge);
+  $('#keep-separate').addEventListener('change', renderMerge);
+
+  // Existing merged reading: list its measurements; the values are their average.
+  function renderParts() {
+    const group = editParts.length >= 2;
+    $('#parts').hidden = !group;
+    $('#avg-info').hidden = !group;
+    for (const f of ['sys', 'dia', 'pulse']) form.elements[f].readOnly = group;
+    if (!editParts.length) return;
+    const v = averageOf(editParts);
+    for (const f of ['sys', 'dia', 'pulse']) form.elements[f].value = v[f] ?? '';
+    if (!group) return;
+    $('#avg-info').textContent = `Average: ${fmtVals(v)} — ${avgLabel(editParts.length)}`;
+    $('#parts-list').replaceChildren(...editParts.map((p, i) => el('li', {},
+      p.thumb ? el('img', { class: 'thumb', src: p.thumb, alt: '' }) : null,
+      el('span', {}, timeStr(p.ts)), el('b', {}, fmtVals(p)),
+      el('button', { type: 'button', class: 'btn small', 'aria-label': `Remove measurement at ${timeStr(p.ts)}`,
+        onclick: () => { editParts.splice(i, 1); renderParts(); } }, 'Remove'))));
   }
 
   function openEditor(existing, opts) {
     opts = opts || {};
     editing = existing || null;
-    series = [];
+    editParts = existing ? partsOf(existing).map((p) => ({ ...p })) : [];
     pendingThumb = existing ? existing.thumb || null : null;
     pendingSource = existing ? existing.source : (opts.scan ? 'scan' : 'manual');
+    pendingOcr = null;
     form.reset();
     $('#editor-title').textContent = existing ? 'Edit reading' : opts.scan ? 'Check the scanned values' : 'New reading';
     $('#delete-reading').hidden = !existing;
     $('#scan-preview').hidden = !opts.scan;
-    $('#series-add').hidden = !!existing;
     for (const f of ['sys', 'dia', 'pulse']) {
       form.elements[f].value = existing && existing[f] != null ? existing[f] : '';
       form.elements[f].classList.remove('check');
     }
     form.elements.note.value = existing ? existing.note || '' : '';
     form.elements.ts.value = localInput(existing ? existing.ts : opts.ts || Date.now());
-    renderSeries();
-    if (existing && existing.parts && existing.parts.length > 1) {
-      $('#series-avg').hidden = false;
-      $('#series-avg').textContent = `Average of ${existing.parts.length}: ${existing.parts.map(fmtPart).join(', ')}`;
-    }
+    renderParts();
+    renderMerge();
     if (!dlg.open) dlg.showModal();
   }
 
   $('#manual-btn').addEventListener('click', () => openEditor(null));
 
-  // Move the values in the fields into the series. Returns false if they are not complete yet.
-  function pushCurrent() {
-    const cur = currentPart();
-    if (!cur) {
-      if (!fieldsEmpty() || !series.length) {
-        form.elements.sys.required = form.elements.dia.required = true;
-        form.reportValidity();
-        return false;
-      }
-      return true; // nothing typed, earlier measurements exist: just take another one
-    }
-    series.push(cur);
-    clearFields();
-    renderSeries();
-    return true;
-  }
-  for (const id of ['#next-scan-btn', '#next-pick-btn']) {
-    // check the current values before the picker opens; they move into the series once a photo is chosen
-    $(id).addEventListener('click', (e) => { if (e.target.tagName !== 'INPUT' && !currentPart() && !(fieldsEmpty() && series.length)) { e.preventDefault(); pushCurrent(); } });
-  }
-  for (const id of ['#next-scan', '#next-pick']) {
-    $(id).addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      e.target.value = '';
-      if (file && pushCurrent()) handleImage(file, { append: true });
-    });
-  }
-  $('#next-manual').addEventListener('click', () => {
-    if (!pushCurrent()) return;
-    $('#scan-preview').hidden = true;
-    form.elements.sys.focus();
-  });
-
-  // don't lose a series to a stray Cancel or Esc
-  const keepSeries = (e) => {
-    const n = seriesParts().length;
-    if (series.length && !confirm(n === 1 ? 'Discard this measurement?' : `Discard these ${n} measurements?`)) e.preventDefault();
-  };
-  dlg.addEventListener('cancel', keepSeries);
-  form.querySelector('button[value=cancel]').addEventListener('click', keepSeries);
-
   dlg.addEventListener('close', async () => {
     const action = dlg.returnValue;
     if (action === 'save') {
-      const parts = seriesParts();
-      const vals = parts.length >= 2 ? averageOf(parts) : {
-        sys: num(form.elements.sys.value), dia: num(form.elements.dia.value), pulse: num(form.elements.pulse.value),
-      };
-      const rec = {
-        id: editing ? editing.id : uid(),
-        ts: new Date(form.elements.ts.value).getTime() || Date.now(),
-        ...vals,
-        note: form.elements.note.value.trim(),
-        source: pendingSource,
-        thumb: pendingThumb,
-      };
-      if (parts.length >= 2) rec.parts = parts;
-      else if (editing && editing.parts) rec.parts = editing.parts;
+      const note = form.elements.note.value.trim();
+      let rec, msg;
+      if (editing) {
+        const cur = fieldsPart();
+        let parts;
+        if (editParts.length >= 2) {
+          // moving the reading's time moves all its measurements
+          const shift = cur.ts - editing.ts;
+          parts = editParts.map((p) => ({ ...p, ts: p.ts + shift }));
+        } else {
+          parts = [{ ...(editParts[0] || {}), ...cur, thumb: (editParts[0] || {}).thumb || null, source: (editParts[0] || {}).source || cur.source }];
+        }
+        rec = withParts({ ...editing, note }, parts);
+        msg = `Saved ${rec.sys}/${rec.dia}`;
+      } else {
+        const part = fieldsPart();
+        const g = $('#keep-separate').checked ? null : groupFor(part.ts);
+        if (g) {
+          const notes = [g.note, note].filter(Boolean);
+          rec = withParts({ ...g, note: [...new Set(notes)].join('; ') }, [...partsOf(g), part]);
+          msg = `Added to ${timeStr(rec.ts)} reading (${rec.parts.length} measurements) → ${rec.sys}/${rec.dia}`;
+        } else {
+          rec = withParts({ id: uid(), note, source: pendingSource }, [part]);
+          msg = `Saved ${rec.sys}/${rec.dia}`;
+        }
+      }
       await put('readings', rec);
-      toast(parts.length >= 2 ? `Saved average ${rec.sys}/${rec.dia} (${parts.length} measurements)` : `Saved ${rec.sys}/${rec.dia}`);
+      toast(msg);
       load();
     } else if (action === 'delete' && editing) {
       if (confirm('Delete this reading?')) { await del('readings', editing.id); toast('Reading deleted'); load(); }
     }
-    series = [];
     dlg.returnValue = '';
   });
 
-  async function handleImage(file, opts) {
+  // When the photo was taken, from the JPEG's EXIF DateTimeOriginal (local time), or null.
+  async function exifTime(file) {
+    try {
+      const v = new DataView(await file.slice(0, 256 * 1024).arrayBuffer());
+      if (v.getUint16(0) !== 0xffd8) return null;
+      let o = 2;
+      while (o + 4 < v.byteLength) {
+        const marker = v.getUint16(o), len = v.getUint16(o + 2);
+        if (marker === 0xffe1 && v.getUint32(o + 4) === 0x45786966) return tiffTime(v, o + 10);
+        if ((marker & 0xff00) !== 0xff00 || marker === 0xffda) return null;
+        o += 2 + len;
+      }
+    } catch (e) { /* not a readable JPEG: fall back to the file time */ }
+    return null;
+  }
+  function tiffTime(v, base) {
+    const le = v.getUint16(base) === 0x4949;
+    const u16 = (o) => v.getUint16(base + o, le), u32 = (o) => v.getUint32(base + o, le);
+    const tags = (ifd) => {
+      const out = {};
+      for (let i = 0, n = u16(ifd); i < n; i++) {
+        const e = ifd + 2 + i * 12;
+        out[u16(e)] = { type: u16(e + 2), count: u32(e + 4), value: u32(e + 8) };
+      }
+      return out;
+    };
+    const str = (t) => {
+      let s = '';
+      for (let i = 0; i < t.count - 1; i++) s += String.fromCharCode(v.getUint8(base + t.value + i));
+      return s;
+    };
+    const ifd0 = tags(u32(4));
+    const exif = ifd0[0x8769] ? tags(ifd0[0x8769].value) : {};
+    const t = exif[0x9003] || ifd0[0x0132];
+    const m = t && t.type === 2 && str(t).match(/^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d):(\d\d)/);
+    if (!m) return null;
+    const d = new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+    return d > 0 ? d : null;
+  }
+
+  async function handleImage(file) {
     if (!file) return;
-    if (opts && opts.append) {
-      // next measurement of a series: keep the dialog, time and note
-      $('#editor-title').textContent = 'Check the scanned values';
-      $('#scan-preview').hidden = false;
-      if (pendingSource === 'manual') pendingSource = 'scan';
-      clearFields();
-      renderSeries();
-    } else {
-      openEditor(null, { scan: true, ts: file.lastModified || Date.now() });
-    }
+    const when = (await exifTime(file)) || file.lastModified || Date.now();
+    openEditor(null, { scan: true, ts: when });
     const status = $('#scan-status');
     status.className = 'scan-status';
     status.textContent = 'Reading the display…';
@@ -468,6 +512,7 @@
       ctx.drawImage(img, 0, 0, c.width, c.height);
       await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
       const res = window.BpOcr.recognize(ctx.getImageData(0, 0, c.width, c.height));
+      pendingOcr = { sys: res.sys ?? null, dia: res.dia ?? null, pulse: res.pulse ?? null, v: window.BpOcr.version };
 
       // preview: the detected display (or the whole photo if not found)
       const lcd = res.debug && res.debug.lcd;
@@ -477,10 +522,13 @@
       pv.width = Math.round(crop.w); pv.height = Math.round(crop.h);
       pv.getContext('2d').drawImage(c, crop.x, crop.y, crop.w, crop.h, 0, 0, pv.width, pv.height);
       const tc = document.createElement('canvas');
-      const ts = 160 / Math.max(crop.w, crop.h);
+      // 320px keeps the digits readable enough to re-run the OCR on exported backups
+      const ts = Math.min(1, 320 / Math.max(crop.w, crop.h));
       tc.width = Math.round(crop.w * ts); tc.height = Math.round(crop.h * ts);
       tc.getContext('2d').drawImage(c, crop.x, crop.y, crop.w, crop.h, 0, 0, tc.width, tc.height);
       pendingThumb = tc.toDataURL('image/jpeg', 0.7);
+      // free the big canvases now; mobile browsers release canvas memory only lazily
+      c.width = c.height = 0; tc.width = tc.height = 0;
 
       const plausible = { sys: [60, 260], dia: [30, 160], pulse: [30, 220] };
       let doubtful = 0;
@@ -495,7 +543,7 @@
       if (!lcd) { status.className = 'scan-status warn'; status.textContent = 'Could not find the display. Enter the numbers manually.'; }
       else if (doubtful) { status.className = 'scan-status warn'; status.textContent = 'Some values could not be read — please check the highlighted fields.'; }
       else { status.className = 'scan-status ok'; status.textContent = 'Read from photo — compare with the display, then save.'; }
-      renderSeries();
+      renderMerge();
     } catch (err) {
       status.className = 'scan-status warn';
       status.textContent = 'Could not read this image. Enter the numbers manually.';
@@ -521,7 +569,7 @@
   $('#export-readings').addEventListener('click', () => {
     const rows = [['datetime', 'date', 'time', 'systolic', 'diastolic', 'pulse', 'category', 'note', 'source', 'measurements']];
     for (const r of readings.slice().sort((a, b) => a.ts - b.ts)) {
-      const parts = r.parts && r.parts.length > 1 ? r.parts.map((p) => `${p.sys}/${p.dia}${p.pulse ? '/' + p.pulse : ''}`).join('; ') : '';
+      const parts = partsOf(r).length > 1 ? partsOf(r).map((p) => `${timeStr(p.ts)} ${p.sys}/${p.dia}${p.pulse ? '/' + p.pulse : ''}`).join('; ') : '';
       rows.push([localInput(r.ts), dayKey(r.ts), timeStr(r.ts), r.sys, r.dia, r.pulse, category(r.sys, r.dia).label, r.note, r.source, parts]);
     }
     download(`bp-readings-${stamp()}.csv`, rows.map((r) => r.map(csvCell).join(',')).join('\n'), 'text/csv');
@@ -532,7 +580,7 @@
     download(`medication-log-${stamp()}.csv`, rows.map((r) => r.map(csvCell).join(',')).join('\n'), 'text/csv');
   });
   $('#export-json').addEventListener('click', () => {
-    download(`bp-backup-${stamp()}.json`, JSON.stringify({ app: 'bp-tracker', version: 1, readings, meds, doses }, null, 1), 'application/json');
+    download(`bp-backup-${stamp()}.json`, JSON.stringify({ app: 'bp-tracker', version: 2, readings, meds, doses, settings: [settings] }, null, 1), 'application/json');
   });
 
   function parseCsv(text) {
@@ -581,6 +629,12 @@
     } catch (err) {
       toast('Import failed: ' + err.message);
     }
+  });
+
+  $('#window-select').addEventListener('change', async (e) => {
+    settings = { ...settings, windowMin: +e.target.value };
+    await put('settings', settings);
+    toast(settings.windowMin ? `Readings within ${settings.windowMin} min will be averaged` : 'Readings will be kept separate');
   });
 
   async function renderStorage() {

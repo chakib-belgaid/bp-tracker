@@ -1,1 +1,9 @@
 .DS_Store
+# personal health data (scans from app backups)
+test/fixtures/backup/
+bp-backup*.json
+
+# training environment and generated data (regenerate with train/)
+train/.venv/
+train/data/
+__pycache__/

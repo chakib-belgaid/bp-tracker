@@ -1,6 +1,6 @@
 // Cache-first service worker: the whole app works without a network.
-const CACHE = 'bp-log-v2';
-const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'ocr.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'bp-log-v9';
+const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'ocr.js', 'digitnet.js', 'digitnet-weights.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
@@ -11,6 +11,8 @@ self.addEventListener('activate', (e) => {
 });
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // test pages and fixtures always come from the network (never a stale cached copy)
+  if (new URL(e.request.url).pathname.includes('/test/')) return;
   // stale-while-revalidate: answer from cache instantly, refresh it in the background
   e.respondWith(caches.open(CACHE).then(async (cache) => {
     const hit = await cache.match(e.request, { ignoreSearch: true });

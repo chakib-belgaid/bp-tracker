@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR benchmark</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  pre { background: #f4f4f2; padding: 12px; border-radius: 8px; white-space: pre-wrap; }
+  button { font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px solid #ccc; background: #2a78d6; color: #fff; }
+</style>
+<h1>OCR benchmark</h1>
+<p>Times the full photo parse and the digit network on this device. Copy the result into the README.</p>
+<p><small>If times grow from run to run: wait 2 minutes and run again (the phone was hot, so it's
+thermal throttling), or reload the page and run again (the page was holding memory). "heap" should
+go up and down, not climb steadily.</small></p>
+<button id="go">Run benchmark</button>
+<pre id="out">not run yet</pre>
+<script src="../digitnet.js"></script>
+<script src="../digitnet-weights.js"></script>
+<script src="../ocr.js"></script>
+<script>
+  const out = document.getElementById('out');
+  const log = (s) => { out.textContent += s + '\n'; };
+  const heap = () => (performance.memory ? `${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)} MB` : 'n/a');
+  // the photo is decoded once per page load, so repeated runs don't allocate new canvases
+  let photo = null;
+  async function load(src) {
+    if (photo) return photo;
+    const img = new Image(); img.src = src; await img.decode();
+    const s = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    photo = ctx.getImageData(0, 0, c.width, c.height);
+    c.width = c.height = 0; // release the canvas backing store now, not at the next GC
+    return photo;
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const median = (v) => v.slice().sort((a, b) => a - b)[v.length >> 1];
+  let runNo = 0;
+  document.getElementById('go').addEventListener('click', async () => {
+    runNo++;
+    out.textContent = '';
+    log(`run #${runNo} on this page   heap before: ${heap()}`);
+    log(`device: ${navigator.userAgent}`);
+    log(`cores: ${navigator.hardwareConcurrency || '?'}`);
+    const img = await load('fixtures/126-81-81-a.jpg');
+    BpOcr.recognize(img); BpOcr.recognize(img, { noNet: true }); // warm-up
+    // interleaved, so neither variant is always measured on a hotter CPU
+    const times = { net: [], rules: [] };
+    for (let i = 0; i < 8; i++) {
+      for (const [k, opts] of [['net', {}], ['rules', { noNet: true }]]) {
+        await tick();
+        const t = performance.now(); BpOcr.recognize(img, opts); times[k].push(performance.now() - t);
+      }
+    }
+    const line = (name, v) => `full photo, ${name}: median ${median(v).toFixed(0)} ms (min ${Math.min(...v).toFixed(0)}, max ${Math.max(...v).toFixed(0)})`;
+    log(line('with DigitNet', times.net));
+    log(line('7-segment rules only', times.rules));
+    log(`  in order, with DigitNet: ${times.net.map((t) => t.toFixed(0)).join(' ')}`);
+    const net = BpOcr.getNet();
+    const pix = new Uint8Array(net.meta.crop[0] * net.meta.crop[1]).map((_, i) => (i * 37) % 255);
+    for (let i = 0; i < 50; i++) net.predict(pix);
+    const n = 1000, t = performance.now();
+    for (let i = 0; i < n; i++) net.predict(pix);
+    log(`DigitNet: ${((performance.now() - t) / n).toFixed(3)} ms per digit`);
+    const r = BpOcr.recognize(img);
+    log(`result: ${r.sys}/${r.dia} pulse ${r.pulse}`);
+    log(`heap after: ${heap()}`);
+  });
+</script>
